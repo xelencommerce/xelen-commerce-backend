@@ -1,0 +1,57 @@
+# Local development only; supply the generated .env.docker explicitly.
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Run npm run local:docker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run npm run local:docker}
+      POSTGRES_DB: xelen_dev
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?Run npm run local:docker}
+    ports: ['127.0.0.1:55433:5432']
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/01-xelen.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d xelen_dev']
+      interval: 5s
+      timeout: 3s
+      retries: 15
+  migrate:
+    build: { context: ., target: tooling }
+    env_file: .env.docker
+    command: ['npm', 'run', 'db:migrate']
+    depends_on: { postgres: { condition: service_healthy } }
+  api:
+    build: { context: ., target: runtime }
+    env_file: .env.docker
+    # Operator/migration credentials never enter the web process.
+    environment:
+      NODE_ENV: development
+      MIGRATION_DATABASE_URL: ''
+      TEST_MIGRATION_DATABASE_URL: ''
+      POSTGRES_PASSWORD: ''
+      APP_DATABASE_PASSWORD: ''
+    ports: ['127.0.0.1:4000:4000']
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      mailpit: { condition: service_started }
+    read_only: true
+    tmpfs: ['/tmp']
+    cap_drop: ['ALL']
+    security_opt: ['no-new-privileges:true']
+    init: true
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ['127.0.0.1:58025:8025']
+    # No SMTP connection leaves the development network.
+  redis:
+    image: redis:7.4-bookworm
+    profiles: ['redis']
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  postgres-data:

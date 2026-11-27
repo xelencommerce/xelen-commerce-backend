@@ -1,0 +1,293 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+}
+
+enum MerchantStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum RoleScope {
+  PLATFORM
+  MERCHANT
+}
+
+enum FactorKind {
+  TOTP
+  SMS
+  RECOVERY
+}
+
+enum ChallengePurpose {
+  REGISTRATION
+  LOGIN
+  ENROLLMENT
+  STEP_UP
+}
+
+enum TokenPurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+  REAUTHENTICATION
+}
+
+model User {
+  id              String               @id @default(uuid()) @db.Uuid
+  email           String               @unique @db.VarChar(254)
+  passwordHash    String
+  status          UserStatus           @default(PENDING)
+  emailVerifiedAt DateTime?            @db.Timestamptz(3)
+  failedLogins    Int                  @default(0)
+  lockedUntil     DateTime?            @db.Timestamptz(3)
+  createdAt       DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime             @updatedAt @db.Timestamptz(3)
+  memberships     MerchantMembership[]
+  platformRoles   UserRole[]
+  sessions        Session[]
+  methods         MfaMethod[]
+  challenges      MfaChallenge[]
+  recoveryCodes   RecoveryCode[]
+  tokens          UserToken[]
+  audits          AuditLog[]
+  emailOutbox     EmailOutbox[]
+}
+
+model Merchant {
+  id          String               @id @default(uuid()) @db.Uuid
+  name        String?              @db.VarChar(200)
+  status      MerchantStatus       @default(PENDING)
+  createdAt   DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime             @updatedAt @db.Timestamptz(3)
+  memberships MerchantMembership[]
+  profile     BusinessProfile?
+  audits      AuditLog[]
+
+  @@index([status, createdAt])
+}
+
+model BusinessProfile {
+  id            String   @id @default(uuid()) @db.Uuid
+  tenantId      String   @unique @db.Uuid
+  businessName  String   @db.VarChar(200)
+  industry      String   @db.VarChar(100)
+  otherIndustry String?  @db.VarChar(1000)
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+  merchant      Merchant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, id])
+}
+
+model MerchantMembership {
+  id        String           @id @default(uuid()) @db.Uuid
+  tenantId  String           @db.Uuid
+  userId    String           @db.Uuid
+  roleId    String           @db.Uuid
+  status    MembershipStatus @default(ACTIVE)
+  createdAt DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime         @updatedAt @db.Timestamptz(3)
+  merchant  Merchant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user      User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role      Role             @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, userId])
+  @@unique([tenantId, id])
+  @@index([userId, status])
+  @@index([roleId])
+}
+
+model Role {
+  id          String               @id @default(uuid()) @db.Uuid
+  name        String               @unique @db.VarChar(80)
+  scope       RoleScope
+  permissions RolePermission[]
+  users       UserRole[]
+  memberships MerchantMembership[]
+}
+
+model Permission {
+  id    String           @id @default(uuid()) @db.Uuid
+  key   String           @unique @db.VarChar(100)
+  roles RolePermission[]
+}
+
+model RolePermission {
+  roleId       String     @db.Uuid
+  permissionId String     @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model UserRole {
+  userId String @db.Uuid
+  roleId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+}
+
+model Session {
+  id              String         @id @default(uuid()) @db.Uuid
+  userId          String         @db.Uuid
+  mfaKind         FactorKind
+  authenticatedAt DateTime       @default(now()) @db.Timestamptz(3)
+  expiresAt       DateTime       @db.Timestamptz(3)
+  revokedAt       DateTime?      @db.Timestamptz(3)
+  ipHash          String         @db.VarChar(64)
+  userAgent       String         @db.VarChar(200)
+  createdAt       DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime       @updatedAt @db.Timestamptz(3)
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens   RefreshToken[]
+  challenges      MfaChallenge[]
+  grants          UserToken[]
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  sessionId  String    @db.Uuid
+  tokenHash  String    @unique @db.VarChar(64)
+  expiresAt  DateTime  @db.Timestamptz(3)
+  consumedAt DateTime? @db.Timestamptz(3)
+  replacedBy String?   @db.Uuid
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  session    Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([expiresAt])
+}
+
+model MfaMethod {
+  id           String     @id @default(uuid()) @db.Uuid
+  userId       String     @db.Uuid
+  kind         FactorKind
+  secretCipher String?
+  phone        String?    @db.VarChar(16)
+  lastCounter  BigInt?
+  confirmedAt  DateTime   @db.Timestamptz(3)
+  createdAt    DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @db.Timestamptz(3)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, kind])
+}
+
+model MfaChallenge {
+  id                  String           @id @default(uuid()) @db.Uuid
+  userId              String           @db.Uuid
+  tokenHash           String           @unique @db.VarChar(64)
+  purpose             ChallengePurpose
+  sessionId           String?          @db.Uuid
+  selectedKind        FactorKind?
+  pendingSecretCipher String?
+  phoneTarget         String?          @db.VarChar(16)
+  otpHash             String?          @db.VarChar(64)
+  otpExpiresAt        DateTime?        @db.Timestamptz(3)
+  lastSentAt          DateTime?        @db.Timestamptz(3)
+  attempts            Int              @default(0)
+  resendCount         Int              @default(0)
+  remember            Boolean          @default(false)
+  expiresAt           DateTime         @db.Timestamptz(3)
+  consumedAt          DateTime?        @db.Timestamptz(3)
+  createdAt           DateTime         @default(now()) @db.Timestamptz(3)
+  user                User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session             Session?         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([sessionId])
+  @@index([expiresAt])
+}
+
+model RecoveryCode {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  codeHash  String    @db.VarChar(64)
+  usedAt    DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, codeHash])
+}
+
+model UserToken {
+  id        String       @id @default(uuid()) @db.Uuid
+  userId    String       @db.Uuid
+  sessionId String?      @db.Uuid
+  purpose   TokenPurpose
+  tokenHash String       @unique @db.VarChar(64)
+  expiresAt DateTime     @db.Timestamptz(3)
+  usedAt    DateTime?    @db.Timestamptz(3)
+  createdAt DateTime     @default(now()) @db.Timestamptz(3)
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session   Session?     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+  @@index([sessionId])
+  @@index([expiresAt])
+}
+
+model AuditLog {
+  id        String    @id @default(uuid()) @db.Uuid
+  actorId   String?   @db.Uuid
+  tenantId  String?   @db.Uuid
+  action    String    @db.VarChar(100)
+  entityId  String?   @db.Uuid
+  requestId String?   @db.VarChar(80)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  actor     User?     @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  merchant  Merchant? @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, createdAt, id])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt, id])
+}
+
+model EmailOutbox {
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @db.Uuid
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payloadCipher String    @db.Text
+  expiresAt     DateTime  @db.Timestamptz(3)
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now()) @db.Timestamptz(3)
+  leaseUntil    DateTime? @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([userId])
+  @@index([nextAttemptAt, leaseUntil])
+  @@index([expiresAt])
+}
+
+model RateLimitBucket {
+  key       String   @id @db.VarChar(64)
+  count     Int      @default(1)
+  expiresAt DateTime @db.Timestamptz(3)
+
+  @@index([expiresAt])
+}
